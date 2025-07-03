@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import importlib
 import itertools
 import math
 import unittest
@@ -22,12 +23,13 @@ from os import getenv
 from textwrap import dedent
 from typing import TYPE_CHECKING
 
+import ml_dtypes
 import numpy as np
 import parameterized
 import version_utils
-from numpy.testing import assert_allclose, assert_almost_equal
+from numpy.testing import assert_allclose
 
-import onnx._custom_element_types as custom
+import onnx
 from onnx import (
     AttributeProto,
     FunctionProto,
@@ -35,15 +37,11 @@ from onnx import (
     TensorProto,
     checker,
     parser,
-    subbyte,
 )
 from onnx.backend.test.case.node.roialign import get_roi_align_input_values
 from onnx.checker import check_model
 from onnx.defs import onnx_opset_version
 from onnx.helper import (
-    float32_to_bfloat16,
-    float32_to_float8e4m3,
-    float32_to_float8e5m2,
     make_function,
     make_graph,
     make_model,
@@ -57,7 +55,7 @@ from onnx.helper import (
     make_tensor_value_info,
     make_value_info,
 )
-from onnx.numpy_helper import float8e4m3_to_float32, float8e5m2_to_float32, from_array
+from onnx.numpy_helper import from_array
 from onnx.reference import ReferenceEvaluator
 from onnx.reference.op_run import OpRun, OpRunExpand
 from onnx.reference.ops import load_op
@@ -76,6 +74,7 @@ from onnx.reference.ops_optimized.op_conv_optimized import _conv_implementation_
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+
 # TODO (https://github.com/microsoft/onnxruntime/issues/14932): Get max supported version from onnxruntime directly
 # For now, bump the version in CIs whenever there is a new onnxruntime release
 ORT_MAX_IR_SUPPORTED_VERSION = int(getenv("ORT_MAX_IR_SUPPORTED_VERSION", "8"))
@@ -87,12 +86,8 @@ ORT_MAX_ONNX_OPSET_SUPPORTED_VERSION = int(
 def skip_if_no_onnxruntime(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        try:
-            import onnxruntime
-
-            del onnxruntime
-        except ImportError:
-            raise unittest.SkipTest("onnxruntime not installed") from None
+        if importlib.util.find_spec("onnxruntime") is None:
+            raise unittest.SkipTest("onnxruntime not installed")
         fn(*args, **kwargs)
 
     return wrapper
@@ -101,12 +96,8 @@ def skip_if_no_onnxruntime(fn):
 def skip_if_no_torch(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        try:
-            import torch
-
-            del torch
-        except ImportError:
-            raise unittest.SkipTest("torch not installed") from None
+        if importlib.util.find_spec("torch") is None:
+            raise unittest.SkipTest("torch not installed")
         fn(*args, **kwargs)
 
     return wrapper
@@ -115,26 +106,8 @@ def skip_if_no_torch(fn):
 def skip_if_no_torchvision(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        try:
-            import torchvision
-
-            del torchvision
-        except ImportError:
-            raise unittest.SkipTest("torchvision not installed") from None
-        fn(*args, **kwargs)
-
-    return wrapper
-
-
-def skip_if_no_ml_dtypes(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        try:
-            import ml_dtypes
-
-            del ml_dtypes
-        except ImportError:
-            raise unittest.SkipTest("ml-dtypes not installed") from None
+        if importlib.util.find_spec("torchvision") is None:
+            raise unittest.SkipTest("torchvision not installed")
         fn(*args, **kwargs)
 
     return wrapper
@@ -148,7 +121,7 @@ def make_sequence_value_info(name, elem_type, shape):
 
 
 def run_ort_inference(onnx_model):
-    import onnxruntime as ort
+    import onnxruntime as ort  # noqa: PLC0415
 
     onnx_domain_opset = ORT_MAX_ONNX_OPSET_SUPPORTED_VERSION
     for opset in onnx_model.opset_import:
@@ -167,7 +140,7 @@ def run_ort_inference(onnx_model):
     )
 
 
-def im2col_naive_implementation(data, kernel_shape, dilations, pads, strides):  # type: ignore
+def im2col_naive_implementation(data, kernel_shape, dilations, pads, strides):
     """Naive implementation for `im2col`.
 
     Args:
@@ -232,8 +205,8 @@ def im2col(
                 new_shape = img.shape[:2] + out.shape
                 res = np.empty(new_shape, dtype=img.dtype)
             res[n, c, ...] = out
-    new_shape = res.shape[: -len(kernel_shape)] + (-1,)  # type: ignore
-    return res.reshape(new_shape)  # type: ignore
+    new_shape = (*res.shape[: -len(kernel_shape)], -1)
+    return res.reshape(new_shape)
 
 
 class TestReferenceEvaluator(unittest.TestCase):
@@ -333,7 +306,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         z = np.array([[-4, -5], [-6, -7]], dtype=np.float32)
         res = sess.run(None, {"B01": x, "B11": y, "B21": z})[0]
         expected = (x + y) * (y - z)
-        assert_allclose(expected, res)
+        assert_allclose(res, expected)
 
     def test_reference_evaluator_no_attribute_intermediate(self):
         m = TestReferenceEvaluator._load_model(TestReferenceEvaluator.m2_def)
@@ -348,7 +321,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         res = sess.run(None, {"B01": x, "B11": y, "B21": z}, intermediate=True)
         self.assertIsInstance(res, dict)
         expected = (x + y) * (y - z)
-        assert_allclose(expected, res["D0"])
+        assert_allclose(res["D0"], expected)
 
     def test_reference_evaluator_no_attribute_bytes(self):
         m = TestReferenceEvaluator._load_model(TestReferenceEvaluator.m2_def)
@@ -362,7 +335,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         z = np.array([[-4, -5], [-6, -7]], dtype=np.float32)
         res = sess.run(None, {"B01": x, "B11": y, "B21": z})[0]
         expected = (x + y) * (y - z)
-        assert_allclose(expected, res)
+        assert_allclose(res, expected)
 
     def test_reference_evaluator_no_attribute_verbose(self):
         m = TestReferenceEvaluator._load_model(TestReferenceEvaluator.m2_def)
@@ -456,7 +429,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = f(x, a, b)
         sess = ReferenceEvaluator(lr)
         got = sess.run(None, {"X": a, "A": a, "B": b})[0]
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_reference_evaluator_lr_clip(self):
         with self.subTest(opt="min+max"):
@@ -469,7 +442,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             last_node = sess.rt_nodes_[-1]
             self.assertEqual(last_node.__class__.__name__, "Clip_11")
             got = sess.run(None, {"X": a, "A": a, "B": b})[0]
-            assert_allclose(expected, got)
+            assert_allclose(got, expected)
 
         with self.subTest(opt="max"):
             lr, f = TestReferenceEvaluator._linear_regression(clip=True, min_value=None)
@@ -481,7 +454,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             last_node = sess.rt_nodes_[-1]
             self.assertEqual(last_node.__class__.__name__, "Clip_11")
             got = sess.run(None, {"X": a, "A": a, "B": b})[0]
-            assert_allclose(expected, got)
+            assert_allclose(got, expected)
 
         with self.subTest(opt="min"):
             lr, f = TestReferenceEvaluator._linear_regression(clip=True, max_value=None)
@@ -493,7 +466,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             last_node = sess.rt_nodes_[-1]
             self.assertEqual(last_node.__class__.__name__, "Clip_11")
             got = sess.run(None, {"X": a, "A": a, "B": b})[0]
-            assert_allclose(expected, got)
+            assert_allclose(got, expected)
 
     def test_reference_evaluator_lr_clip_6(self):
         with self.subTest(opt="min+max"):
@@ -508,7 +481,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             self.assertEqual(last_node.min, -1)
             self.assertEqual(last_node.max, 1)
             got = sess.run(None, {"X": a, "A": a, "B": b})[0]
-            assert_allclose(expected, got)
+            assert_allclose(got, expected)
 
         with self.subTest(opt="max"):
             lr, f = TestReferenceEvaluator._linear_regression(
@@ -524,7 +497,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             self.assertEqual(last_node.max, 1)
             self.assertEqual(last_node.min, -3.4028234663852886e38)
             got = sess.run(None, {"X": a, "A": a, "B": b})[0]
-            assert_allclose(expected, got)
+            assert_allclose(got, expected)
 
         with self.subTest(opt="min"):
             lr, f = TestReferenceEvaluator._linear_regression(
@@ -540,7 +513,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             self.assertEqual(last_node.min, -1)
             self.assertEqual(last_node.max, 3.4028234663852886e38)
             got = sess.run(None, {"X": a, "A": a, "B": b})[0]
-            assert_allclose(expected, got)
+            assert_allclose(got, expected)
 
     def test_nested_local_functions(self):
         m = parser.parse_model(
@@ -592,7 +565,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         x = np.array([0, 1, 3], dtype=np.uint8).reshape((1, 1, 3))
         result = sess.run(None, {"x": x})[0]
         expected = x
-        assert_allclose(expected, result)
+        assert_allclose(result, expected)
 
     def test_reduce_sum_11(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -605,7 +578,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = x.sum(axis=1, keepdims=1)
         sess = ReferenceEvaluator(onnx_model)
         got = sess.run(None, {"X": x})[0]
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_reduce_sum_square_11(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -618,7 +591,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = (x * x).sum(axis=1, keepdims=1)
         sess = ReferenceEvaluator(onnx_model)
         got = sess.run(None, {"X": x})[0]
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_reduce_sum_13(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -633,7 +606,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = x.sum(axis=1, keepdims=1)
         sess = ReferenceEvaluator(onnx_model)
         got = sess.run(None, {"X": x, "A": a})[0]
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_reduce_sum_attribute(self):
         opset = onnx_opset_version()
@@ -684,7 +657,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         a = np.array([-1], dtype=np.int64)
         result = sess.run(None, {"X": x, "axis": a})[0]
         expected = x.sum(axis=-1, keepdims=1)
-        assert_allclose(expected, result)
+        assert_allclose(result, expected)
 
     def test_reduce_sum_square_18(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -699,7 +672,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = (x * x).sum(axis=1, keepdims=1)
         sess = ReferenceEvaluator(onnx_model)
         got = sess.run(None, {"X": x, "A": a})[0]
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_reduce_sum_13_empty_axes(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -714,7 +687,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = x.sum(keepdims=1)
         sess = ReferenceEvaluator(onnx_model)
         got = sess.run(None, {"X": x, "A": a})[0]
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_reduce_sum_square_18_empty_axes(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -729,7 +702,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = (x * x).sum(keepdims=1)
         sess = ReferenceEvaluator(onnx_model)
         got = sess.run(None, {"X": x, "A": a})[0]
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_reduce_sum_13_empty_axes_noop(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -770,7 +743,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = x > y
         sess = ReferenceEvaluator(onnx_model)
         got = sess.run(None, {"X": x, "Y": y})[0]
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_node_proto(self):
         node1 = make_node("Greater", ["X", "Y"], ["Z"])
@@ -779,7 +752,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = x > y
         sess = ReferenceEvaluator(node1)
         got = sess.run(None, {"X": x, "Y": y})[0]
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_greater_or_equal(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -794,7 +767,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = x >= y
         sess = ReferenceEvaluator(onnx_model)
         got = sess.run(None, {"X": x, "Y": y})[0]
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_if(self):
         C = make_tensor_value_info("C", TensorProto.FLOAT, [None])
@@ -889,7 +862,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         sess = ReferenceEvaluator(m)
         result = sess.run(None, {"cond": np.array(True)})
         expected = np.array([1, 2, 3, 4, 5], dtype=np.float32)
-        assert_allclose(expected, result[0])
+        assert_allclose(result[0], expected)
 
     def test_function_attribute(self):
         opset = onnx_opset_version()
@@ -944,7 +917,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         a = np.array([1, -1], dtype=np.float32)
         result = sess.run(None, {"X": x, "A": a})[0]
         expected = np.abs(x @ a + 0.67)
-        assert_allclose(expected, result)
+        assert_allclose(result, expected)
 
     def test_function_attribute_nested_graph(self):
         opset = onnx_opset_version()
@@ -1050,11 +1023,11 @@ class TestReferenceEvaluator(unittest.TestCase):
 
         result = sess.run(None, {"X": x + 1, "A": a})[0]
         expected = np.abs(x @ a + 0.67)
-        assert_allclose(expected, result)
+        assert_allclose(result, expected)
 
         result = sess.run(None, {"X": x - 10, "A": a})[0]
         expected = np.abs(x @ a + 777)
-        assert_allclose(expected, result)
+        assert_allclose(result, expected)
 
     def test_function_attribute_nested_nested_graph(self):
         opset = onnx_opset_version()
@@ -1171,36 +1144,36 @@ class TestReferenceEvaluator(unittest.TestCase):
 
         result = sess.run(None, {"X": x + 1, "A": a})[0]
         expected = np.abs(x @ a + 777)
-        assert_allclose(expected, result)
+        assert_allclose(result, expected)
 
         result = sess.run(None, {"X": x - 10, "A": a})[0]
         expected = np.abs(x @ a - 888)
-        assert_allclose(expected, result)
+        assert_allclose(result, expected)
 
         result = sess.run(None, {"X": x + 1000, "A": a})[0]
         expected = np.abs(x @ a + 0.67)
-        assert_allclose(expected, result)
+        assert_allclose(result, expected)
 
     def test_custom_node(self):
         class _InvAlpha:
             op_domain = "custom"
 
-            def __init__(self, onnx_node, run_params):  # type: ignore
+            def __init__(self, onnx_node, run_params):
                 self.onnx_node = onnx_node
                 self.run_params = run_params
 
-            def _run(self, x):  # type: ignore
+            def _run(self, x):
                 return (1 / (x + self.alpha),)
 
         class InvAlpha2(OpRun):
-            def _run(self, x):  # type: ignore
+            def _run(self, x):
                 return (1 / (x + self.alpha),)
 
         class InvAlpha(OpRun):
             op_domain = "custom"
 
-            def _run(self, x, alpha=None):  # type: ignore
-                alpha = alpha or self.alpha  # type: ignore
+            def _run(self, x, alpha=None):
+                alpha = alpha or self.alpha
                 return (1 / (x + alpha),)
 
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -1230,14 +1203,14 @@ class TestReferenceEvaluator(unittest.TestCase):
         sess = ReferenceEvaluator(onnx_model, new_ops=[InvAlpha, InvAlpha])
         got = sess.run(None, {"X": x})[0]
         expected = 1 / (x + 0.5)
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_custom_no_output_tuple(self):
         class InvAlpha(OpRun):
             op_domain = "custom"
 
-            def _run(self, x, alpha=None):  # type: ignore
-                alpha = alpha or self.alpha  # type: ignore
+            def _run(self, x, alpha=None):
+                alpha = alpha or self.alpha
                 return 1 / (x + alpha)
 
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -1254,7 +1227,8 @@ class TestReferenceEvaluator(unittest.TestCase):
         class InvAlpha(OpRun):
             op_domain = "custom"
 
-            def _run(self, x, alpha=None):  # type: ignore  # noqa: ARG002
+            def _run(self, x, alpha=None):
+                del x, alpha
                 return tuple()
 
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -1271,8 +1245,8 @@ class TestReferenceEvaluator(unittest.TestCase):
         class InvAlpha(OpRun):
             op_domain = "custom"
 
-            def _run(self, x, alpha=None):  # type: ignore
-                alpha = alpha or self.alpha  # type: ignore
+            def _run(self, x, alpha=None):
+                alpha = alpha or self.alpha
                 res = tuple([tuple([1 / (x + alpha)])])  # noqa: C409
                 assert isinstance(res, tuple)
                 assert isinstance(res[0], tuple)
@@ -1295,8 +1269,9 @@ class TestReferenceEvaluator(unittest.TestCase):
         class InvAlpha(OpRun):
             op_domain = "custom"
 
-            def _run(self, x, alpha=None):  # type: ignore  # noqa: ARG002
-                res = tuple([CustomType()])  # noqa: C409
+            def _run(self, x, alpha=None):
+                del x, alpha
+                res = (CustomType(),)
                 assert isinstance(res, tuple)
                 assert isinstance(res[0], CustomType)
                 return res
@@ -1446,7 +1421,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         oinf = ReferenceEvaluator(model_def)
         inputs = {"trip_count": trip_count, "cond": cond, "seq_empty": seq_empty}
         got = oinf.run(None, inputs)
-        assert_allclose(expected, got[0])
+        assert_allclose(got[0], expected)
 
     def test_onnxt_runtime_bernoulli(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
@@ -1518,14 +1493,14 @@ class TestReferenceEvaluator(unittest.TestCase):
         x = np.array([[0, 1], [-1, 2]], dtype=np.float32)
         y = Celu.eval(x, alpha=0.5)
         expected = _vcelu1(x, alpha=0.5)
-        assert_allclose(expected, y)
+        assert_allclose(y, expected)
 
     def test_eval_cast(self):
         x = np.array([[0, 1], [-1, 2]], dtype=np.float32)
         y = Cast_19.eval(x, to=TensorProto.FLOAT8E4M3FN)
         dy = Cast_19.eval(y, to=TensorProto.FLOAT)
         expected = x
-        assert_allclose(expected, dy)
+        assert_allclose(dy, expected)
 
     def test_eval_celu_load_op(self):
         celu = load_op("", "Celu")
@@ -1535,7 +1510,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         x = np.array([[0, 1], [-1, 2]], dtype=np.float32)
         y = celu.eval(x, alpha=0.5)
         expected = _vcelu1(x, alpha=0.5)
-        assert_allclose(expected, y)
+        assert_allclose(y, expected)
 
     def test_create_adam(self):
         inst = Adam.create(alpha=0.5)
@@ -1578,11 +1553,11 @@ class TestReferenceEvaluator(unittest.TestCase):
                 B = np.array([[[[0]]]], dtype=np.float32)
                 expected = sess1.run(None, {"X": X, "W": W, "B": B})[0]
                 got = sess2.run(None, {"X": X, "W": W, "B": B})[0]
-                assert_allclose(expected, got)
+                assert_allclose(got, expected)
                 got3 = sess3.run(None, {"X": X, "W": W, "B": B})[0]
-                assert_allclose(expected, got3)
+                assert_allclose(got3, expected)
                 got4 = sess4.run(None, {"X": X, "W": W, "B": B})[0]
-                assert_allclose(expected, got4)
+                assert_allclose(got4, expected)
 
     @skip_if_no_onnxruntime
     def test_qlinearconv(self):
@@ -1643,7 +1618,7 @@ class TestReferenceEvaluator(unittest.TestCase):
                     }
                     expected = sess1.run(None, feeds)[0]
                     got = sess2.run(None, feeds)[0]
-                    assert_allclose(expected, got)
+                    assert_allclose(got, expected)
                 with self.subTest(w="3x3", i=i, j=j):
                     w = np.zeros((1, 1, 3, 3), dtype=np.uint8)
                     w[0, 0, :, :] = np.minimum(2 ** np.arange(9).reshape((3, -1)), 128)
@@ -1659,7 +1634,7 @@ class TestReferenceEvaluator(unittest.TestCase):
                     }
                     expected = sess1.run(None, feeds)[0]
                     got = sess2.run(None, feeds)[0]
-                    assert_allclose(expected, got)
+                    assert_allclose(got, expected)
                 with self.subTest(w="1x1", i=i, j=j):
                     w = np.zeros((1, 1, 1, 1), dtype=np.uint8)
                     w[0, 0, :, :] = 0
@@ -1675,7 +1650,7 @@ class TestReferenceEvaluator(unittest.TestCase):
                     }
                     expected = sess1.run(None, feeds)[0]
                     got = sess2.run(None, feeds)[0]
-                    assert_allclose(expected, got)
+                    assert_allclose(got, expected)
 
     def test_qlinearconv_w_scale_vector(self):
         x = make_tensor_value_info("x", TensorProto.UINT8, [None, None, None, None])
@@ -1757,7 +1732,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             ]
 
             got = sess.run(None, feeds)[0]
-            assert_allclose(expected, got)
+            assert_allclose(got, expected)
 
         with self.subTest("multiple_output_channels"):
             x = np.array(
@@ -1812,7 +1787,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             ]
 
             got = sess.run(None, feeds)[0]
-            assert_allclose(expected, got)
+            assert_allclose(got, expected)
 
         with self.subTest("fails_with_w_scale_2D"):
             x = np.zeros((1, 1, 7, 7), dtype=np.uint8)
@@ -1965,7 +1940,7 @@ class TestReferenceEvaluator(unittest.TestCase):
 
     @skip_if_no_torch
     def test_col2im(self):
-        import torch
+        import torch  # noqa: PLC0415
 
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None, None])
         Y = make_tensor_value_info("Y", TensorProto.FLOAT, [None, None, None])
@@ -2006,7 +1981,7 @@ class TestReferenceEvaluator(unittest.TestCase):
     def common_test_col2im(
         self, size, image_shape, block_shape, pads, strides, dilations
     ):
-        import torch
+        import torch  # noqa: PLC0415
 
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None, None])
         Y = make_tensor_value_info("Y", TensorProto.FLOAT, [None, None, None])
@@ -2042,8 +2017,6 @@ class TestReferenceEvaluator(unittest.TestCase):
 
                 output = fold(torch.from_numpy(X)).numpy()
                 got = sess.run(None, {"X": X, "B": b_shape, "I": i_shape})
-                # print(output)
-                # print(got)
                 assert_allclose(output, got[0])
 
     @skip_if_no_torch
@@ -2248,7 +2221,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             dtype=np.float32,
         )
 
-        assert_allclose(expected, got1[0])
+        assert_allclose(got1[0], expected)
 
     def test_max_pool_2d_1(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None, None, None])
@@ -2281,7 +2254,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
-        assert_allclose(expected, got1[0])
+        assert_allclose(got1[0], expected)
 
     def test_max_pool_2d_2(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None, None, None])
@@ -2331,7 +2304,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
-        assert_allclose(expected, got1[0])
+        assert_allclose(got1[0], expected)
 
     def test_scatter_elements(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -2357,7 +2330,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         expected = np.array([[1.0, 1.1, 3.0, 4.0, 5.0]], dtype=np.float32)
-        assert_allclose(expected, got1[0])
+        assert_allclose(got1[0], expected)
 
     def test_scatternd(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -2381,7 +2354,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         expected = np.array([[3.0, 2.0]], dtype=np.float32)
-        assert_allclose(expected, got1[0])
+        assert_allclose(got1[0], expected)
 
     def test_conv_transpose_2d(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None, None, None])
@@ -2407,12 +2380,6 @@ class TestReferenceEvaluator(unittest.TestCase):
             "B": np.array([0, 0, 0, 0], dtype=np.float32),
         }
 
-        # import torch
-        # ex = torch.nn.functional.conv_transpose2d(
-        #     torch.Tensor(feeds["X"]), torch.Tensor(feeds["W"]),
-        #     bias=None, stride=1, padding=1, output_padding=0, groups=1, dilation=1)
-        # print(ex)
-
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         expected = np.array(
@@ -2429,7 +2396,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             ],
             dtype=np.float32,
         )
-        assert_allclose(expected, got1[0])
+        assert_allclose(got1[0], expected)
 
         feeds["X"] *= 0
         feeds["X"][0, 0, 0, 0] = 1
@@ -2450,7 +2417,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             ],
             dtype=np.float32,
         )
-        assert_allclose(expected, got1[0])
+        assert_allclose(got1[0], expected)
 
     def test_conv_transpose_2d_upper(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None, None, None])
@@ -2498,13 +2465,9 @@ class TestReferenceEvaluator(unittest.TestCase):
             dtype=np.float32,
         )
 
-        # import onnxruntime
-        # ref0 = onnxruntime.InferenceSession(onnx_model.SerializeToString(), providers=["CPUExecutionProvider"])
-        # got0 = ref0.run(None, feeds)
-
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
-        assert_allclose(expected, got1[0])
+        assert_allclose(got1[0], expected)
 
     @unittest.skipIf(
         version_utils.numpy_older_than("1.21.5"),
@@ -2557,7 +2520,7 @@ class TestReferenceEvaluator(unittest.TestCase):
 
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
-        assert_allclose(expected, got1[0])
+        assert_allclose(got1[0], expected)
 
     @unittest.skipIf(
         version_utils.numpy_older_than("1.21.5"),
@@ -2614,7 +2577,7 @@ class TestReferenceEvaluator(unittest.TestCase):
 
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
-        assert_allclose(expected, got1[0])
+        assert_allclose(got1[0], expected)
 
     def get_roi_align_model(self, mode):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None, None, None])
@@ -2645,7 +2608,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         expected = sess.run(None, feeds)
         ref = ReferenceEvaluator(onnx_model)
         got = ref.run(None, feeds)
-        assert_allclose(expected[0], got[0], atol=1e-5)
+        assert_allclose(got[0], expected[0], atol=1e-5)
 
     @skip_if_no_onnxruntime
     def test_roi_align(self):
@@ -2656,8 +2619,8 @@ class TestReferenceEvaluator(unittest.TestCase):
             self.common_test_roi_align("max")
 
     def common_test_roi_align_torch(self, mode):
-        import torch
-        from torchvision.ops import RoIAlign
+        import torch  # noqa: PLC0415
+        from torchvision.ops import RoIAlign  # noqa: PLC0415
 
         onnx_model = self.get_roi_align_model(mode)
         sess = ReferenceEvaluator(onnx_model)
@@ -2666,7 +2629,7 @@ class TestReferenceEvaluator(unittest.TestCase):
 
         a = RoIAlign((5, 5), spatial_scale=1.0, sampling_ratio=2)
         expected = a(torch.from_numpy(X), [torch.from_numpy(rois)])
-        assert_allclose(expected, got[0], atol=1e-5)
+        assert_allclose(got[0], expected, atol=1e-5)
 
     @skip_if_no_torch
     @skip_if_no_torchvision
@@ -2699,7 +2662,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         for i in range(4):
-            assert_allclose(expected[i], got1[i])
+            np.testing.assert_equal(got1[i], expected[i])
 
     def test_split_2(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
@@ -2726,7 +2689,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         for i in range(4):
-            assert_allclose(expected[i], got1[i])
+            assert_allclose(got1[i], expected[i])
 
     def test_split_num_outputs_4(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
@@ -2751,7 +2714,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         for i in range(4):
-            assert_allclose(expected[i], got1[i])
+            assert_allclose(got1[i], expected[i])
 
         # case 2
         feeds = {"X": np.arange(9).astype(np.float32)}
@@ -2765,7 +2728,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         for i in range(4):
-            assert_allclose(expected[i], got1[i])
+            assert_allclose(got1[i], expected[i])
 
     def test_argmin(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -2777,7 +2740,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         expected = np.array([0, 0, 0], dtype=np.int64).reshape((-1, 1))
-        self.assertEqual(expected.tolist(), got1[0].tolist())
+        self.assertEqual(got1[0].tolist(), expected.tolist())
 
     def test_argmax(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -2789,7 +2752,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         expected = np.array([3, 3, 3], dtype=np.int64).reshape((-1, 1))
-        self.assertEqual(expected.tolist(), got1[0].tolist())
+        self.assertEqual(got1[0].tolist(), expected.tolist())
 
     def test_slice_squeeze(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -2812,7 +2775,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         expected = np.array([0], dtype=np.int64)
-        self.assertEqual(expected.tolist(), got1[0].tolist())
+        self.assertEqual(got1[0].tolist(), expected.tolist())
 
     def test_slice_squeeze_6(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -2827,7 +2790,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref1 = ReferenceEvaluator(onnx_model)
         got1 = ref1.run(None, feeds)
         expected = np.array([0], dtype=np.int64)
-        self.assertEqual(expected.tolist(), got1[0].tolist())
+        self.assertEqual(got1[0].tolist(), expected.tolist())
 
     def test_onnxrt_reduce_mean(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None, None])
@@ -3194,8 +3157,8 @@ class TestReferenceEvaluator(unittest.TestCase):
         ref_expected = ReferenceEvaluator(ref_onnx_model)
         expected = ref_expected.run(None, {"X": x})[0]
 
-        self.assertEqual(expected.shape, got.shape)
-        assert_allclose(expected, got)
+        self.assertEqual(got.shape, expected.shape)
+        assert_allclose(got, expected)
 
     def test_concat_in_a_function(self):
         def create_model():
@@ -3392,19 +3355,22 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         ref = ReferenceEvaluator(model)
         data = np.array([0, 1, 2, 5e-2, 200], dtype=np.float32)
-        print([float32_to_float8e4m3(x) for x in data])
-        expected1 = np.array(
-            [float8e4m3_to_float32(float32_to_float8e4m3(x)) for x in data]
-        )
-        expected2 = np.array(
-            [float8e5m2_to_float32(float32_to_float8e5m2(x)) for x in data]
-        )
+        expected1 = onnx.numpy_helper.saturating_cast(
+            data, ml_dtypes.float8_e4m3fn
+        ).astype(np.float32)
+        expected2 = onnx.numpy_helper.saturating_cast(
+            data, ml_dtypes.float8_e5m2
+        ).astype(np.float32)
         got = ref.run(None, {"X": data})
-        assert_allclose(expected1, got[0])
-        assert_allclose(expected2, got[1])
-        assert_allclose(expected1, got[2])
-        assert_allclose(expected2, got[3])
+        assert_allclose(got[0], expected1)
+        assert_allclose(got[1], expected2)
+        assert_allclose(got[2], expected1)
+        assert_allclose(got[3], expected2)
 
+    @unittest.skipIf(
+        version_utils.numpy_older_than("2.0"),
+        "assert_allclose does not support ml_dtypes in numpy < 2.0",
+    )
     def test_cast_like_float8(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
         Y = make_tensor_value_info("Y", TensorProto.FLOAT, [None])
@@ -3421,14 +3387,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             )
         )
         data = np.array([0, 1e7], dtype=np.float32)
-        expected = np.array(
-            [
-                float8e4m3_to_float32(
-                    float32_to_float8e4m3(x, uz=True, saturate=False), uz=True
-                )
-                for x in data
-            ]
-        )
+        expected = data.astype(ml_dtypes.float8_e4m3fnuz)
         ref = ReferenceEvaluator(model)
         got = ref.run(None, {"X": data})
         assert_allclose(got[0], expected)
@@ -3459,11 +3418,11 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         ref = ReferenceEvaluator(model)
         data = np.array([0, 1, 2, 5e-2, 200], dtype=np.float32)
-        expected1 = np.array([float32_to_float8e4m3(x) for x in data])
-        expected2 = np.array([float32_to_float8e5m2(x) for x in data])
+        expected1 = onnx.numpy_helper.saturating_cast(data, ml_dtypes.float8_e4m3fn)
+        expected2 = onnx.numpy_helper.saturating_cast(data, ml_dtypes.float8_e5m2)
         got = ref.run(None, {"X": data})
-        self.assertEqual(expected1.tolist(), got[0].tolist())
-        self.assertEqual(expected2.tolist(), got[1].tolist())
+        self.assertEqual(got[0].tolist(), expected1.tolist())
+        self.assertEqual(got[1].tolist(), expected2.tolist())
 
     def test_float8_4_types(self):
         x = np.array(
@@ -3589,9 +3548,9 @@ class TestReferenceEvaluator(unittest.TestCase):
                 onnx_model = model_cast_cast(to)
                 ref = ReferenceEvaluator(onnx_model)
                 y = ref.run(None, {"X": x})[0]
-                assert_allclose(expect, y)
-                self.assertEqual(expect.shape, y.shape)
-                self.assertEqual(expect.dtype, y.dtype)
+                assert_allclose(y, expect)
+                self.assertEqual(y.shape, expect.shape)
+                self.assertEqual(y.dtype, expect.dtype)
 
     def test_cast_bfloat16_output(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
@@ -3608,9 +3567,9 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         ref = ReferenceEvaluator(model)
         data = np.array([0, 1, 2, 1e5, 200], dtype=np.float32)
-        expected1 = np.array([float32_to_bfloat16(x) for x in data])
+        expected = data.astype(ml_dtypes.bfloat16)
         got = ref.run(None, {"X": data})
-        self.assertEqual(expected1.tolist(), got[0].tolist())
+        np.testing.assert_array_equal(got[0], expected)
 
     def test_quantize_linear_e4m3(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
@@ -3642,7 +3601,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         data = np.array([0, 1, 2, 1e5, 200], dtype=np.float32)
         expected = np.array([0, 1, 2, 896, 192], dtype=np.float32)
         got = ref.run(None, {"X": data})
-        assert_allclose(expected, got[0])
+        assert_allclose(got[0], expected)
 
     def test_quantize_linear_e4m3_initializer(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
@@ -3666,7 +3625,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         data = np.array([0, 1, 2, 1e5, 200], dtype=np.float32)
         expected = np.array([0, 1, 2, 896, 192], dtype=np.float32)
         got = ref.run(None, {"X": data})
-        assert_allclose(expected, got[0])
+        assert_allclose(got[0], expected)
 
     def test_quantize_linear_e5m2(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
@@ -3698,7 +3657,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         data = np.array([0, 1, 2, 1e5, 200], dtype=np.float32)
         expected = np.array([0, 1, 2, 98304, 192], dtype=np.float32)
         got = ref.run(None, {"X": data})
-        assert_allclose(expected, got[0])
+        assert_allclose(got[0], expected)
 
     def test_quantize_linear_uint16(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
@@ -3758,7 +3717,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             dtype=np.uint16,
         )
         got = ref.run(None, {"X": data})
-        assert_allclose(expected, got[0])
+        assert_allclose(got[0], expected)
 
     def test_quantize_linear_int16(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
@@ -3826,7 +3785,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             dtype=np.int16,
         )
         got = ref.run(None, {"X": data})
-        assert_allclose(expected, got[0])
+        assert_allclose(got[0], expected)
 
     def test_dequantize_linear_uint16(self):
         X = make_tensor_value_info("X", TensorProto.UINT16, [None])
@@ -3851,7 +3810,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         data = np.array([30000, 31000, 32768, 33000], dtype=np.uint16)
         expected = np.array([-5534.0, -3534.0, 2.0, 466.0], dtype=np.float32)
         got = ref.run(None, {"X": data})
-        assert_allclose(expected, got[0])
+        assert_allclose(got[0], expected)
 
     def test_dequantize_linear_int16(self):
         X = make_tensor_value_info("X", TensorProto.INT16, [None])
@@ -3876,7 +3835,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         data = np.array([-300, -30, -1025, 1270], dtype=np.int16)
         expected = np.array([1448.0, 1988.0, -2.0, 4588.0], dtype=np.float32)
         got = ref.run(None, {"X": data})
-        assert_allclose(expected, got[0])
+        assert_allclose(got[0], expected)
 
     @parameterized.parameterized.expand(
         [
@@ -3971,7 +3930,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         if expected is not None:
             expected = np.array(expected, dtype=np.int8)
             got = ref.run(None, {"X": data})
-            assert_allclose(expected, got[0])
+            assert_allclose(got[0], expected)
         else:
             with self.assertRaises(ValueError):
                 ref.run(None, {"X": data})
@@ -4078,7 +4037,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         if expected is not None:
             expected = np.array(expected, dtype=np.float32)
             got = ref.run(None, {"X": data})
-            assert_allclose(expected, got[0])
+            assert_allclose(got[0], expected)
         else:
             with self.assertRaises(ValueError):
                 ref.run(None, {"X": data})
@@ -4116,7 +4075,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         data = np.random.rand(5, 5, 5, 5).astype(np.float32)
         got = ref.run(None, {"X": data})
         expected = _expected(data, alpha, beta, bias, size)
-        self.assertEqual(len(expected), len(got[0]))
+        self.assertEqual(len(got[0]), len(expected))
 
     def test_conv_im2col_1d(self):
         feeds = {
@@ -4134,7 +4093,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         expected = _conv_implementation(**feeds, **kwargs)
         got = _conv_implementation_im2col(**feeds, **kwargs)
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_conv_im2col_1d_pad0(self):
         feeds = {
@@ -4152,7 +4111,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         expected = _conv_implementation(**feeds, **kwargs)
         got = _conv_implementation_im2col(**feeds, **kwargs)
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_conv_im2col_2d(self):
         feeds = {
@@ -4171,7 +4130,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         expected = _conv_implementation(**feeds, **kwargs)
         got = _conv_implementation_im2col(**feeds, **kwargs)
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_conv_im2col_2d_pad0(self):
         feeds = {
@@ -4190,7 +4149,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         expected = _conv_implementation(**feeds, **kwargs)
         got = _conv_implementation_im2col(**feeds, **kwargs)
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_conv_im2col_2d_autopad(self):
         feeds = {
@@ -4208,7 +4167,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         expected = _conv_implementation(**feeds, **kwargs)
         got = _conv_implementation_im2col(**feeds, **kwargs)
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_conv_im2col_3d(self):
         feeds = {
@@ -4229,7 +4188,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         expected = _conv_implementation(**feeds, **kwargs)
         got = _conv_implementation_im2col(**feeds, **kwargs)
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_conv_im2col_2d_strides(self):
         feeds = {
@@ -4247,7 +4206,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         expected = _conv_implementation(**feeds, **kwargs)
         got = _conv_implementation_im2col(**feeds, **kwargs)
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     def test_conv_im2col_2d_dilations(self):
         feeds = {
@@ -4265,7 +4224,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         expected = _conv_implementation(**feeds, **kwargs)
         got = _conv_implementation_im2col(**feeds, **kwargs)
-        assert_allclose(expected, got)
+        assert_allclose(got, expected)
 
     @parameterized.parameterized.expand(
         [
@@ -5421,7 +5380,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         got = ref.run(None, feeds)
         self.assertEqual(len(got), 3)
         for i in range(2, -1, -1):
-            assert_allclose(expected[i], got[i])
+            assert_allclose(got[i], expected[i])
 
     @parameterized.parameterized.expand(
         [
@@ -5680,10 +5639,6 @@ class TestReferenceEvaluator(unittest.TestCase):
             (TensorProto.INT4, [0], [0]),
         ]
     )
-    @unittest.skipIf(
-        version_utils.numpy_older_than("1.22.0"),
-        "The test requires numpy 1.22.0 or later",
-    )
     def test_quantize_linear_int4(self, qtype, data, expected):
         X = make_tensor_value_info("X", TensorProto.FLOAT, [None])
         Y = make_tensor_value_info("Y", TensorProto.FLOAT, [None])
@@ -5712,7 +5667,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         ref = ReferenceEvaluator(model)
         got = ref.run(None, {"X": np.asarray(data)})
-        assert_allclose(expected, got[0])
+        assert_allclose(got[0], expected)
 
     @parameterized.parameterized.expand(
         itertools.product(
@@ -5734,13 +5689,13 @@ class TestReferenceEvaluator(unittest.TestCase):
             )
         )
         ref = ReferenceEvaluator(model)
-        data = np.array([0, 1, 2.4, 2.6, 4, 10], dtype=np.float32)
-        signed = cast_to == TensorProto.INT4
-        expected1 = np.array(
-            [subbyte.float32_to_4bit_unpacked(x, signed=signed) for x in data]
+        data = np.array(
+            [0, 1, 2.4, 2.6, 4, 10],
+            dtype=onnx.helper.tensor_dtype_to_np_dtype(cast_from),
         )
+        expected = data.astype(onnx.helper.tensor_dtype_to_np_dtype(cast_to))
         got = ref.run(None, {"X": data})
-        self.assertEqual(expected1.tolist(), got[0].tolist())
+        self.assertEqual(got[0].tolist(), expected.tolist())
 
     @parameterized.parameterized.expand(
         itertools.product(
@@ -5748,7 +5703,9 @@ class TestReferenceEvaluator(unittest.TestCase):
             (TensorProto.FLOAT, TensorProto.FLOAT16),
         )
     )
-    def test_cast_int4_input(self, cast_from, cast_to):
+    def test_cast_int4_input(
+        self, cast_from: TensorProto.DataType, cast_to: TensorProto.DataType
+    ):
         X = make_tensor_value_info("X", cast_from, [None])
         Y = make_tensor_value_info("Y", cast_to, [None])
         model = make_model(
@@ -5763,12 +5720,9 @@ class TestReferenceEvaluator(unittest.TestCase):
         )
         ref = ReferenceEvaluator(model)
         data = np.array(range(7), dtype=np.float32)
-        cast_from_np = custom.uint4 if cast_from == TensorProto.UINT4 else custom.int4
-        expected1 = np.array(
-            [subbyte.float32_to_4bit_unpacked(x, cast_from_np) for x in data]
-        )
+        expected = data.astype(onnx.helper.tensor_dtype_to_np_dtype(cast_from))
         got = ref.run(None, {"X": data})
-        self.assertEqual(expected1.tolist(), got[0].tolist())
+        np.testing.assert_array_equal(got[0], expected)
 
     def test_a_function_calling_a_function_once(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, ["N"])
@@ -5846,7 +5800,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         # oinf = ReferenceEvaluator(inlined)
         # goti = oinf.run(None, feeds)
         # self.assertEqual(expected[0].tolist(), goti[0].tolist())
-        self.assertEqual(expected[0], np.array([-4], dtype=np.float32))
+        np.testing.assert_equal(np.array([-4], dtype=np.float32), expected[0])
 
     def test_a_function_calling_a_function_double(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, ["N"])
@@ -5925,7 +5879,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         # oinf = ReferenceEvaluator(inlined)
         # goti = oinf.run(None, feeds)
         # self.assertEqual(expected[0].tolist(), goti[0].tolist())
-        self.assertEqual(expected[0], np.array([-3], dtype=np.float32))
+        np.testing.assert_equal(np.array([-3], dtype=np.float32), expected[0])
 
     def test_overload_reference_implementation(self):
         X = make_tensor_value_info("X", TensorProto.FLOAT, ["N"])
@@ -6004,8 +5958,6 @@ class TestReferenceEvaluator(unittest.TestCase):
 
     @parameterized.parameterized.expand(
         [
-            ("UINT4", 0.84),
-            ("INT4", 0.84),
             ("FLOAT8E4M3FN", 0.23),
             ("FLOAT8E4M3FNUZ", 0.23),
             ("FLOAT8E5M2", 0.85),
@@ -6016,8 +5968,7 @@ class TestReferenceEvaluator(unittest.TestCase):
             ("BFLOAT16", 2e-2),
         ]
     )
-    @skip_if_no_ml_dtypes
-    def test_add_custom_dtype(self, stype, atol):
+    def test_add_custom_dtype(self, stype: str, atol: float):
         itype = getattr(TensorProto, stype)
         model = make_model(
             make_graph(
@@ -6045,7 +5996,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         feeds = dict(X=x, Y=y)
         expected = x + y
         got = ref.run(None, feeds)[0]
-        assert_allclose(expected, got, atol=atol)
+        assert_allclose(got, expected, atol=atol)
 
     @parameterized.parameterized.expand(
         [
@@ -6053,16 +6004,14 @@ class TestReferenceEvaluator(unittest.TestCase):
             ("FLOAT",),
             ("FLOAT16",),
             ("BFLOAT16",),
-            # Comparison fails with ml_dtypes
-            # ("FLOAT8E4M3FN", ),
-            # ("FLOAT8E4M3FNUZ", ),
-            # ("FLOAT8E5M2", ),
-            # ("FLOAT8E5M2FNUZ", ),
-            # ("INT4", ),
-            # ("UINT4", ),
+            ("FLOAT8E4M3FN",),
+            ("FLOAT8E4M3FNUZ",),
+            ("FLOAT8E5M2",),
+            ("FLOAT8E5M2FNUZ",),
+            ("INT4",),
+            ("UINT4",),
         ]
     )
-    @skip_if_no_ml_dtypes
     def test_cmp_custom_dtype(self, stype):
         itype = getattr(TensorProto, stype)
         model = make_model(
@@ -6070,7 +6019,7 @@ class TestReferenceEvaluator(unittest.TestCase):
                 [
                     make_node("Cast", ["X"], ["Xc"], to=itype),
                     make_node("Cast", ["Y"], ["Yc"], to=itype),
-                    make_node("Greater", ["Xc", "Yc"], ["Zc"]),
+                    make_node("GreaterOrEqual", ["Xc", "Yc"], ["Zc"]),
                     make_node("Cast", ["Zc"], ["Z"], to=TensorProto.BOOL),
                 ],
                 "nd",
@@ -6091,7 +6040,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         feeds = dict(X=x, Y=y)
         expected = x >= y
         got = ref.run(None, feeds)[0]
-        assert_almost_equal(expected, got)
+        np.testing.assert_equal(got, expected)
 
     def test_scatter_elements_4d(self):
         model = make_model(
@@ -6123,7 +6072,7 @@ class TestReferenceEvaluator(unittest.TestCase):
         ).reshape((2, 2, 2, 2))
         ref = ReferenceEvaluator(model)
         got = ref.run(None, {"data": data, "indices": indices, "updates": updates})
-        assert_allclose(y, got[0])
+        assert_allclose(got[0], y)
 
     def test_sequence_axis(self):
         model = self._load_model(
